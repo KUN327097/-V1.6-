@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>可交互原型 V1.6 (真实上传功能版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .page { display: none; }
+        .page.active-page { display: flex; flex-direction: column; min-height: 100vh; }
+        .main-content { flex-grow: 1; }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #global-toast {
+            transition: opacity 0.5s, transform 0.5s;
+        }
+        /* Custom style for file input */
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+        }
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+    <!-- 全局提示信息 -->
+    <div id="global-toast" class="fixed top-5 right-5 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg opacity-0 transform translate-y-2 z-50"></div>
+
+    <!-- 页面容器 -->
+    <div id="app-container">
+        <!-- 初始加载状态 -->
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="loader"></div>
+        </div>
+    </div>
+
+<script type="module">
+    // --- Firebase SDK 集成 ---
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { 
+        getAuth, 
+        onAuthStateChanged,
+        createUserWithEmailAndPassword,
+        signInWithEmailAndPassword,
+        signOut,
+        updateProfile
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-storage.js";
+
+    // --- 在这里粘贴您项目的Firebase配置 ---
+    const firebaseConfig = {
+        apiKey: "AIzaSyBnhuHJ9bKO5rcPwWp-6-gOMp-quXLriew",
+        authDomain: "ai-eval-workbench-9c08b.firebaseapp.com",
+        projectId: "ai-eval-workbench-9c08b",
+        storageBucket: "ai-eval-workbench-9c08b.firebasestorage.app",
+        messagingSenderId: "633882906323",
+        appId: "1:633882906323:web:508e11c07403e289810e26",
+        measurementId: "G-DHTHLPHYJQ"
+    };
+    // ------------------------------------
+
+    // 初始化Firebase应用
+    let app, auth, db, storage;
+    try {
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+        storage = getStorage(app);
+        console.log("Firebase has been initialized successfully!");
+        window.firebaseServices = { auth, db, storage };
+    } catch (error) {
+        console.error("Firebase initialization failed:", error);
+        showToast('Firebase 初始化失败: ' + error.message, 'error');
+    }
+    // --- Firebase SDK 集成结束 ---
+
+    // --- 全局状态 ---
+    let currentUser = null;
+
+    // --- 核心交互代码 ---
+    const appContainer = document.getElementById('app-container');
+
+    const pages = {
+        'login': `
+            <div id="page-login" class="page bg-gray-100">
+                <main class="main-content flex items-center justify-center p-4">
+                    <div class="w-full max-w-md">
+                        <div class="flex items-center justify-center mb-8 space-x-2">
+                             <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div>
+                             <span class="font-bold text-2xl text-gray-800">评测工作台</span>
+                        </div>
+                        <div class="bg-white p-8 rounded-lg shadow-md">
+                            <h2 id="auth-title" class="text-2xl font-bold text-center text-gray-800">登录您的账户</h2>
+                            <form id="auth-form" class="mt-8 space-y-6">
+                                <div id="name-field" class="hidden"><label for="name" class="block text-sm font-medium text-gray-700">姓名</label><input id="name" name="name" type="text" autocomplete="name" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="例如：小王"></div>
+                                <div><label for="email" class="block text-sm font-medium text-gray-700">邮箱地址</label><input id="email" name="email" type="email" autocomplete="email" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="you@example.com"></div>
+                                <div><label for="password" class="block text-sm font-medium text-gray-700">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="********"></div>
+                                <div><button id="auth-submit-btn" type="submit" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-800 hover:bg-gray-700">登录</button></div>
+                            </form>
+                            <p class="mt-6 text-center text-sm text-gray-600">
+                                <span id="auth-toggle-text">还没有账户？</span>
+                                <a href="javascript:void(0)" id="auth-toggle-link" class="font-medium text-indigo-600 hover:text-indigo-500">立即注册</a>
+                            </p>
+                        </div>
+                    </div>
+                </main>
+            </div>`,
+        'home': `
+            <div id="page-home" class="page">
+                <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                    <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                        <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')">
+                            <div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span>
+                        </div>
+                        <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div>
+                                <span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                <main class="main-content flex items-center justify-center container mx-auto px-6 py-12">
+                    <div class="text-center max-w-2xl w-full">
+                        <h1 class="text-3xl md:text-4xl font-bold text-gray-900">上传文档，智能评测您的AI模型</h1>
+                        <p class="mt-4 text-base text-gray-600">专为AI工程师与产品经理设计，快速、客观地评估大语言模型在特定专业领域的表现。</p>
+                        <div class="mt-10">
+                            <div id="drop-zone" class="relative border-2 border-dashed border-gray-300 rounded-lg p-8 md:p-12 flex flex-col items-center justify-center hover:border-blue-500 transition-colors duration-300 bg-white">
+                                <div class="space-y-4 text-center">
+                                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                    <div class="file-input-wrapper px-6 py-3 bg-gray-800 text-white font-semibold rounded-md hover:bg-gray-700 transition-colors">
+                                        <span>+ 选择文件</span>
+                                        <input type="file" id="file-input" accept=".pdf">
+                                    </div>
+                                    <p class="text-sm text-gray-500">或将文件拖拽至此区域</p>
+                                </div>
+                                <div id="upload-progress-overlay" class="absolute inset-0 bg-white bg-opacity-80 flex-col items-center justify-center hidden">
+                                    <div class="loader"></div>
+                                    <p class="mt-4 text-gray-700 font-medium">正在上传...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                    <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`,
+        'preview': `
+            <div id="page-preview" class="page">
+                <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                    <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                         <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')"><div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span></div>
+                         <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div><span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                 <main class="main-content container mx-auto px-6 py-12">
+                    <div id="preview-loading-state" class="text-center py-20 flex flex-col items-center justify-center">
+                        <div class="loader"></div>
+                        <h2 class="mt-6 text-2xl font-semibold text-gray-800">正在智能解析您的文档...</h2>
+                        <p class="mt-2 text-gray-600">这可能需要一点时间，请稍候。</p>
+                    </div>
+                    <div id="preview-data-state" class="hidden">
+                        <div class="bg-white p-8 rounded-lg shadow-md">
+                            <h1 class="text-2xl font-bold">请校验解析结果</h1>
+                            <p class="mt-2 text-gray-600">共解析出 <span class="font-semibold">1000</span> 条问答对。</p>
+                            <div class="mt-6 overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-300">
+                                    <thead class="bg-gray-50"><tr><th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 w-10">#</th><th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">问题</th><th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">标准答案</th><th class="relative py-3.5 pl-3 pr-4 w-24"></th></tr></thead>
+                                    <tbody class="divide-y divide-gray-200 bg-white">
+                                        <tr><td class="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900">1</td><td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500">建筑设计中最基本的三要素是什么？</td><td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500">实用、坚固、美观。</td><td class="whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium"><a href="#" class="text-indigo-600 hover:text-indigo-900">编辑</a><a href="#" class="text-red-600 hover:text-red-900 ml-4">删除</a></td></tr>
+                                        <tr><td class="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900">2</td><td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500">承重墙和非承重墙的主要区别是什么？</td><td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500">承重墙支撑上部楼层荷载...</td><td class="whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium"><a href="#" class="text-indigo-600 hover:text-indigo-900">编辑</a><a href="#" class="text-red-600 hover:text-red-900 ml-4">删除</a></td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="mt-8 flex justify-between items-center">
+                                <button type="button" onclick="window.showExportToast()" class="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100">⬇️ 导出为CSV</button>
+                                <div class="flex space-x-4">
+                                    <button type="button" onclick="window.navigateTo('home')" class="px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50">取消</button>
+                                    <button type="button" onclick="window.navigateTo('preview')" class="px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50">重新解析</button>
+                                    <button type="button" onclick="window.navigateTo('config')" class="px-6 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-700">确认无误，进入配置</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                     <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`,
+        'config': `
+            <div id="page-config" class="page">
+                <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                     <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                         <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')"><div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span></div>
+                        <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div><span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                 <main class="main-content flex items-center justify-center container mx-auto px-6 py-12">
+                    <div class="w-full max-w-2xl bg-white p-8 rounded-lg shadow-md">
+                        <h1 class="text-2xl font-bold">配置您的评测模型</h1>
+                        <div class="mt-6 border-b border-gray-200"><nav class="-mb-px flex space-x-8"><button id="tab-standard" class="py-4 px-1 border-b-2 font-medium text-sm text-indigo-600 border-indigo-500">测试标准模型</button><button id="tab-custom" class="py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700 border-transparent hover:border-gray-300">测试自定义模型</button></nav></div>
+                        <div class="mt-6">
+                            <div id="pane-standard"><div class="space-y-6"><div><label class="block text-sm font-medium text-gray-700">模型提供商</label><select class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"><option>OpenAI</option><option>Google Gemini</option><option>Anthropic</option></select></div><div><label class="block text-sm font-medium text-gray-700">API Key</label><input type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="sk-..."><p class="mt-2 text-xs text-gray-500">您的API Key不会被永久保存。</p></div></div></div>
+                            <div id="pane-custom" class="hidden"><div class="space-y-6"><div><label class="block text-sm font-medium text-gray-700">API端点地址</label><input type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="https://api.your-model.com/invoke"></div><div><label class="block text-sm font-medium text-gray-700">认证信息 (Token)</label><input type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Bearer ..."></div></div></div>
+                        </div>
+                        <div class="mt-8 pt-6 border-t border-gray-200 flex justify-end space-x-4">
+                            <button type="button" onclick="window.navigateTo('preview')" class="px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50">上一步</button>
+                            <button type="button" onclick="window.navigateTo('test-in-progress')" class="px-6 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-700">启动测试</button>
+                        </div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                     <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`,
+        'test-in-progress': `
+            <div id="page-test-in-progress" class="page">
+                 <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                     <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                         <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')"><div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span></div>
+                        <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div><span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                <main class="main-content flex items-center justify-center container mx-auto px-6 py-12">
+                    <div class="text-center max-w-xl w-full bg-white p-12 rounded-lg shadow-md">
+                        <svg class="mx-auto h-16 w-16 text-green-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <h1 class="mt-4 text-2xl font-bold text-gray-900">任务已成功提交！</h1>
+                        <p class="mt-2 text-gray-600">您的评测任务正在后台全力执行中。您可以随时关闭本页面，稍后从“评测历史”中查看结果。</p>
+                        <div class="mt-8">
+                            <button type="button" onclick="window.navigateTo('history')" class="px-6 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-700">查看评测历史</button>
+                        </div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                     <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`,
+        'history': `
+            <div id="page-history" class="page">
+                 <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                    <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                         <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')"><div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span></div>
+                        <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div><span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                <main class="main-content container mx-auto px-6 py-12">
+                    <div class="bg-white p-8 rounded-lg shadow-md">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div><h1 class="text-2xl font-bold">我的评测历史</h1><p class="mt-2 text-gray-600">查看您所有已提交的评测任务及其状态。</p></div>
+                            <div class="mt-4 sm:mt-0"><button type="button" onclick="window.navigateTo('home')" class="px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-700">+ 发起新评测</button></div>
+                        </div>
+                        <div class="mt-8 flow-root">
+                           <div class="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
+                            <div class="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
+                            <table class="min-w-full divide-y divide-gray-300">
+                                <thead><tr><th scope="col" class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">任务名称</th><th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">提交时间</th><th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">状态</th><th scope="col" class="relative py-3.5 pl-3 pr-4 sm:pr-0"></th></tr></thead>
+                                <tbody class="divide-y divide-gray-200" id="history-table-body">
+                                    <!-- Dynamic content will be inserted here -->
+                                </tbody>
+                            </table>
+                            </div>
+                           </div>
+                        </div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                     <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`,
+        'report': `
+            <div id="page-report" class="page">
+                 <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+                     <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+                         <div class="flex items-center space-x-2 cursor-pointer" onclick="window.navigateTo('home')"><div class="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg></div><span class="font-bold text-xl text-gray-800">评测工作台</span></div>
+                        <nav class="flex items-center space-x-6">
+                            <a href="javascript:void(0)" onclick="window.navigateTo('history')" class="text-gray-600 hover:text-gray-900 font-medium">我的评测历史</a>
+                            <div class="flex items-center space-x-3 border-l pl-6">
+                                <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-semibold text-sm" id="user-initial">U</div><span class="text-sm font-medium text-gray-700" id="user-display-name">未登录</span>
+                                <button onclick="window.handleLogout()" class="text-sm text-gray-500 hover:text-gray-800 ml-2">(退出)</button>
+                            </div>
+                        </nav>
+                    </div>
+                </header>
+                <main class="main-content container mx-auto px-6 py-12">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h1 class="text-3xl font-bold">评测报告: 建筑1000问.pdf</h1>
+                            <p class="mt-2 text-gray-600">测试模型: OpenAI GPT-4o</p>
+                        </div>
+                        <button onclick="window.navigateTo('history')" class="px-4 py-2 text-sm font-medium bg-white border border-gray-300 rounded-md hover:bg-gray-50">← 返回历史记录</button>
+                    </div>
+                    <div class="mt-8"><h2 class="text-lg font-semibold">报告总览</h2><div class="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-4"><div class="bg-white overflow-hidden shadow rounded-lg p-5"><p class="text-sm font-medium text-gray-500 truncate">总题数</p><p class="mt-1 text-3xl font-semibold tracking-tight text-gray-900">1000</p></div><div class="bg-white overflow-hidden shadow rounded-lg p-5"><p class="text-sm font-medium text-gray-500 truncate">平均分</p><p class="mt-1 text-3xl font-semibold tracking-tight text-gray-900">7.8 / 10</p></div><div class="bg-white overflow-hidden shadow rounded-lg p-5 sm:col-span-2"><p class="text-sm font-medium text-gray-500 truncate">分数分布</p><div class="mt-2 flex items-baseline space-x-4"><div class="text-center"><p class="text-2xl font-semibold text-green-600">650</p><p class="text-xs text-gray-500">高分组 (8-10)</p></div><div class="text-center"><p class="text-2xl font-semibold text-yellow-600">250</p><p class="text-xs text-gray-500">中分组 (5-7)</p></div><div class="text-center"><p class="text-2xl font-semibold text-red-600">100</p><p class="text-xs text-gray-500">低分组 (&lt;5)</p></div></div></div></div></div>
+                    <div class="mt-6 bg-white shadow rounded-lg p-5">
+                       <div class="flex justify-between items-center"><h3 class="font-semibold">结果详情</h3><div class="flex space-x-2"><select class="rounded-md text-sm"><option>按分数从低到高</option><option>按分数从高到低</option></select><button class="px-3 py-1 text-sm bg-red-100 text-red-700 rounded-md">低分组</button></div></div>
+                       <div class="mt-4 space-y-4" id="report-details"></div>
+                    </div>
+                </main>
+                <footer class="bg-white border-t border-gray-200">
+                     <div class="container mx-auto px-6 py-6 text-center text-gray-500 text-sm"><span>&copy; 2025 个人AI模型评测工作台. All Rights Reserved.</span></div>
+                </footer>
+            </div>`
+    };
+
+    const reportData = [
+        { score: 3, question: "什么是“后张法预应力混凝土”？", ai_answer: "这是一种先浇筑混凝土，然后施加拉力的技术。", ref_answer: "指先浇筑混凝土构件，待其达到规定强度后，在预留的孔道中穿入预应力钢筋并进行张拉，用锚具锚固在构件端部，最后进行孔道灌浆的一种施工方法。", justification: "回答过于简化，遗漏了‘达到规定强度后’、‘预留孔道’、‘锚固’和‘灌浆’等多个核心关键点。准确性低，完整性差。" },
+        { score: 9, question: "建筑设计中最基本的三要素是什么？", ai_answer: "建筑设计的三大基本要素是实用、坚固和美观，这三者相辅相成，缺一不可。", ref_answer: "实用、坚固、美观。", justification: "回答准确无误，完整覆盖所有关键点，并在基础上进行了合理的补充说明，表述清晰。" }
+    ];
+    
+    // --- 全局函数定义 ---
+    function navigateTo(pageId, data = {}) {
+        const pageTemplate = pages[pageId];
+        if (pageTemplate && pageTemplate !== '...') {
+            appContainer.innerHTML = pageTemplate;
+            const newPage = document.getElementById(`page-${pageId}`);
+            if(newPage) newPage.classList.add('active-page');
+            
+            if (pageId === 'login') {
+                setupAuthListeners();
+            } else {
+                 updateUserInfo();
+            }
+            // Add other page initializers here
+            if (pageId === 'home') {
+                setupFileUploadListeners();
+            }
+        }
+    }
+
+    function updateUserInfo() {
+        if (currentUser) {
+            const userInitial = document.getElementById('user-initial');
+            const userName = document.getElementById('user-display-name');
+            if(userInitial) userInitial.textContent = (currentUser.displayName || currentUser.email || 'U').charAt(0).toUpperCase();
+            if(userName) userName.textContent = currentUser.displayName || currentUser.email;
+        }
+    }
+    
+    function showToast(message, type = 'success') {
+       const toast = document.getElementById('global-toast');
+       if (!toast) return;
+       toast.textContent = message;
+       toast.className = `fixed top-5 right-5 px-6 py-3 rounded-lg shadow-lg opacity-0 transform translate-y-2 z-50 text-white ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
+       
+       toast.offsetHeight; 
+
+       toast.style.opacity = '1';
+       toast.style.transform = 'translateY(0)';
+       setTimeout(() => {
+           toast.style.opacity = '0';
+           toast.style.transform = 'translateY(0.5rem)';
+       }, 3000);
+    }
+
+    // --- 认证相关函数 ---
+    function setupAuthListeners() {
+        const authForm = document.getElementById('auth-form');
+        const authToggleLink = document.getElementById('auth-toggle-link');
+        if (authForm) {
+            let isLoginMode = true;
+
+            authForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = authForm.email.value;
+                const password = authForm.password.value;
+                const name = authForm.name ? authForm.name.value : '';
+
+                if (isLoginMode) {
+                    handleLogin(email, password);
+                } else {
+                    handleSignup(name, email, password);
+                }
+            });
+
+            authToggleLink.addEventListener('click', () => {
+                isLoginMode = !isLoginMode;
+                const title = document.getElementById('auth-title');
+                const nameField = document.getElementById('name-field');
+                const submitBtn = document.getElementById('auth-submit-btn');
+                const toggleText = document.getElementById('auth-toggle-text');
+                
+                if (isLoginMode) {
+                    title.textContent = '登录您的账户';
+                    nameField.classList.add('hidden');
+                    submitBtn.textContent = '登录';
+                    toggleText.textContent = '还没有账户？';
+                    authToggleLink.textContent = '立即注册';
+                } else {
+                    title.textContent = '创建新账户';
+                    nameField.classList.remove('hidden');
+                    submitBtn.textContent = '注册';
+                    toggleText.textContent = '已有账户？';
+                    authToggleLink.textContent = '直接登录';
+                }
+            });
+        }
+    }
+
+    async function handleSignup(name, email, password) {
+       try {
+            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+            const user = userCredential.user;
+            await updateProfile(user, { displayName: name });
+            await setDoc(doc(db, "users", user.uid), {
+                name: name,
+                email: user.email,
+                created_at: new Date()
+            });
+            showToast('✅ 注册成功！正在跳转...', 'success');
+        } catch (error) {
+            console.error("Signup failed:", error);
+            showToast(`注册失败: ${error.code} - ${error.message}`, 'error');
+        }
+    }
+
+    async function handleLogin(email, password) {
+       try {
+            await signInWithEmailAndPassword(auth, email, password);
+            showToast('✅ 登录成功！正在跳转...', 'success');
+        } catch (error) {
+            console.error("Login failed:", error);
+            showToast(`登录失败: ${error.code} - ${error.message}`, 'error');
+        }
+    }
+    
+    async function handleLogout() {
+       try {
+            await signOut(auth);
+            showToast('您已成功退出登录。', 'success');
+        } catch (error) {
+            console.error("Logout failed:", error);
+            showToast(`退出失败: ${error.message}`, 'error');
+        }
+    }
+    
+    // --- 文件上传逻辑 ---
+    function setupFileUploadListeners() {
+        const fileInput = document.getElementById('file-input');
+        const dropZone = document.getElementById('drop-zone');
+
+        if (fileInput) {
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    handleFileUpload(file);
+                }
+            });
+        }
+
+        if(dropZone) {
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('border-blue-500', 'bg-blue-50');
+            });
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+            });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+                const file = e.dataTransfer.files[0];
+                if (file) {
+                    handleFileUpload(file);
+                }
+            });
+        }
+    }
+
+    async function handleFileUpload(file) {
+        if (!currentUser) {
+            showToast('请先登录后再上传文件。', 'error');
+            return;
+        }
+        if (file.type !== "application/pdf") {
+            showToast('仅支持上传PDF格式的文件。', 'error');
+            return;
+        }
+
+        const uploadOverlay = document.getElementById('upload-progress-overlay');
+        uploadOverlay.style.display = 'flex';
+
+        try {
+            const filePath = `uploads/${currentUser.uid}/${Date.now()}-${file.name}`;
+            const storageRef = ref(storage, filePath);
+            
+            showToast('文件开始上传...', 'info');
+            
+            const snapshot = await uploadBytes(storageRef, file);
+            console.log('Uploaded a blob or file!', snapshot);
+
+            const downloadURL = await getDownloadURL(snapshot.ref);
+            console.log('File available at', downloadURL);
+
+            showToast('✅ 文件上传成功！正在解析...', 'success');
+
+            // TODO: 在这里调用PDF解析逻辑
+            // 成功后，将downloadURL和其他数据存入Firestore
+            
+            setTimeout(() => {
+                navigateTo('preview');
+            }, 1000);
+
+        } catch (error) {
+            console.error("Upload failed:", error);
+            showToast(`文件上传失败: ${error.message}`, 'error');
+        } finally {
+            uploadOverlay.style.display = 'none';
+        }
+    }
+
+    // 将需要在HTML onclick中调用的函数暴露到全局作用域
+    window.navigateTo = navigateTo;
+    window.handleLogout = handleLogout;
+    window.showExportToast = () => showToast('✅ 问答对已成功导出！');
+    
+    // --- 应用启动逻辑 ---
+    onAuthStateChanged(auth, (user) => {
+        const currentHash = window.location.hash.substring(1);
+        if (user) {
+            currentUser = user;
+            console.log("User is signed in:", user);
+            navigateTo(currentHash || 'home');
+        } else {
+            currentUser = null;
+            console.log("User is signed out.");
+            navigateTo('login');
+        }
+    });
+
+</script>
+</body>
+</html>
+
